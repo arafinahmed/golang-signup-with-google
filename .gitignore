@@ -1,0 +1,22 @@
+# Exclude git repository data
+.git
+
+# Exclude IDE/editor directories and config files
+.vscode/
+.idea/
+
+# Exclude environment variable files (if not needed during build)
+.env
+
+# Exclude build artifacts and binary files
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Exclude temporary files and logs
+tmp/
+*.log
+
+# Exclude any other files or directories that are not necessary for the build
