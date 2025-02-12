@@ -15,11 +15,11 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// googleOAuthConfig is now configured with credentials read from environment variables.
+// googleOAuthConfig is configured with credentials from environment variables.
 var googleOAuthConfig = &oauth2.Config{
 	RedirectURL:  "http://localhost:8080/auth/google/callback",
-	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),     // Set your Google Client ID in the environment variable "GOOGLE_CLIENT_ID"
-	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), // Set your Google Client Secret in the environment variable "GOOGLE_CLIENT_SECRET"
+	ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),     // Set in the environment
+	ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), // Set in the environment
 	Scopes: []string{
 		"https://www.googleapis.com/auth/userinfo.email",
 		"https://www.googleapis.com/auth/userinfo.profile",
@@ -27,7 +27,19 @@ var googleOAuthConfig = &oauth2.Config{
 	Endpoint: google.Endpoint,
 }
 
-// generateStateToken creates a random string for protecting the OAuth flow from CSRF.
+// githubOAuthConfig is configured for GitHub OAuth using environment variables.
+var githubOAuthConfig = &oauth2.Config{
+	RedirectURL:  "http://localhost:8080/auth/github/callback",
+	ClientID:     os.Getenv("GITHUB_CLIENT_ID"),     // Set in the environment
+	ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"), // Set in the environment
+	Scopes:       []string{"user:email"},
+	Endpoint: oauth2.Endpoint{
+		AuthURL:  "https://github.com/login/oauth/authorize",
+		TokenURL: "https://github.com/login/oauth/access_token",
+	},
+}
+
+// generateStateToken creates a random string to protect the OAuth flow from CSRF.
 func generateStateToken() string {
 	b := make([]byte, 16)
 	_, err := rand.Read(b)
@@ -38,7 +50,7 @@ func generateStateToken() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-// homePage serves a simple homepage with a "Sign in with Google" button.
+// homePage loads the home template which offers login with Google or GitHub.
 func homePage(w http.ResponseWriter, r *http.Request) {
 	tpl, err := template.ParseFiles("templates/home.html")
 	if err != nil {
@@ -48,65 +60,53 @@ func homePage(w http.ResponseWriter, r *http.Request) {
 	tpl.Execute(w, nil)
 }
 
-// handleGoogleLogin initiates the Google OAuth flow by redirecting the user.
+// handleGoogleLogin initiates the Google OAuth flow.
 func handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
-	// Generate a new random state token for every auth request
 	state := generateStateToken()
-	// Store the state token in a cookie (or your session store) for later validation.
 	http.SetCookie(w, &http.Cookie{
-		Name:  "oauthstate",
-		Value: state,
-		Path:  "/",
+		Name:     "oauthstate",
+		Value:    state,
+		Path:     "/",
+		HttpOnly: true, // Recommended for security.
+		// Secure:   true, // Enable if using HTTPS.
 	})
-	// Redirect to Google's consent page.
 	url := googleOAuthConfig.AuthCodeURL(state)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
-// handleGoogleCallback handles the callback from Google after authentication.
+// handleGoogleCallback processes the Google OAuth callback.
 func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
-	// Retrieve state value from our cookie.
 	cookie, err := r.Cookie("oauthstate")
 	if err != nil {
 		http.Error(w, "State cookie missing", http.StatusBadRequest)
 		return
 	}
-
-	// Compare the state value to protect against CSRF.
 	state := r.FormValue("state")
 	if state != cookie.Value {
 		http.Error(w, "Invalid OAuth state", http.StatusBadRequest)
 		return
 	}
-
 	code := r.FormValue("code")
 	if code == "" {
 		http.Error(w, "Code not found", http.StatusBadRequest)
 		return
 	}
-
-	// Exchange the authorization code for an access token.
 	token, err := googleOAuthConfig.Exchange(r.Context(), code)
 	if err != nil {
 		http.Error(w, "Failed to exchange token: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Retrieve the user's public information using the access token.
 	response, err := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + token.AccessToken)
 	if err != nil {
 		http.Error(w, "Failed getting user info: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer response.Body.Close()
-
 	userData, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		http.Error(w, "Failed reading response: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Define a user structure to hold the public information.
 	var user struct {
 		ID            string `json:"id"`
 		Email         string `json:"email"`
@@ -116,14 +116,10 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		FamilyName    string `json:"family_name"`
 		Picture       string `json:"picture"`
 	}
-
-	err = json.Unmarshal(userData, &user)
-	if err != nil {
+	if err = json.Unmarshal(userData, &user); err != nil {
 		http.Error(w, "Failed unmarshalling JSON: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Render a simple HTML page to display the user's public information.
 	tpl, err := template.ParseFiles("templates/profile.html")
 	if err != nil {
 		http.Error(w, "Template parsing error: "+err.Error(), http.StatusInternalServerError)
@@ -132,11 +128,100 @@ func handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	tpl.Execute(w, user)
 }
 
-// main starts the web server and registers our handlers.
+// handleGithubLogin initiates the GitHub OAuth flow.
+func handleGithubLogin(w http.ResponseWriter, r *http.Request) {
+	state := generateStateToken()
+	http.SetCookie(w, &http.Cookie{
+		Name:     "githuboauthstate",
+		Value:    state,
+		Path:     "/",
+		HttpOnly: true,
+		// Secure:   true, // Enable if using HTTPS.
+	})
+	url := githubOAuthConfig.AuthCodeURL(state)
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+}
+
+// handleGithubCallback handles the GitHub OAuth callback.
+func handleGithubCallback(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("githuboauthstate")
+	if err != nil {
+		http.Error(w, "GitHub OAuth state cookie missing", http.StatusBadRequest)
+		return
+	}
+	state := r.FormValue("state")
+	if state != cookie.Value {
+		http.Error(w, "Invalid GitHub OAuth state", http.StatusBadRequest)
+		return
+	}
+	code := r.FormValue("code")
+	if code == "" {
+		http.Error(w, "Code not found", http.StatusBadRequest)
+		return
+	}
+	token, err := githubOAuthConfig.Exchange(r.Context(), code)
+	if err != nil {
+		http.Error(w, "Failed to exchange GitHub token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Retrieve the user's info from GitHub.
+	req, err := http.NewRequest("GET", "https://api.github.com/user", nil)
+	if err != nil {
+		http.Error(w, "Failed to create request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Authorization", "token "+token.AccessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, "Failed getting GitHub user info: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "Failed reading GitHub response: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var ghUser struct {
+		ID        int64  `json:"id"`
+		Login     string `json:"login"`
+		Email     string `json:"email"`
+		Name      string `json:"name"`
+		AvatarURL string `json:"avatar_url"`
+	}
+	if err = json.Unmarshal(body, &ghUser); err != nil {
+		http.Error(w, "Failed unmarshalling GitHub JSON: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Map GitHub user info to profile fields expected by the template.
+	profileData := struct {
+		Picture string
+		Name    string
+		Email   string
+	}{
+		Picture: ghUser.AvatarURL,
+		Name:    ghUser.Name,
+		Email:   ghUser.Email,
+	}
+	// If the GitHub user's name is not set, fallback to the login value.
+	if profileData.Name == "" {
+		profileData.Name = ghUser.Login
+	}
+	tpl, err := template.ParseFiles("templates/profile.html")
+	if err != nil {
+		http.Error(w, "Template parsing error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tpl.Execute(w, profileData)
+}
+
 func main() {
 	http.HandleFunc("/", homePage)
 	http.HandleFunc("/auth/google", handleGoogleLogin)
 	http.HandleFunc("/auth/google/callback", handleGoogleCallback)
+	http.HandleFunc("/auth/github", handleGithubLogin)
+	http.HandleFunc("/auth/github/callback", handleGithubCallback)
+
 	fmt.Println("Server started at http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
